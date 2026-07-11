@@ -1,0 +1,11 @@
+{
+  "name": "youtube-transcript-clean-pdf",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chromium (MV3) extension: download a YouTube transcript as a clean, timestamp-free PDF with sentences flowing as paragraphs.",
+  "scripts": {
+    "test": "node test.js",
+    "icons": "python3 generate_icons.py"
+  }
+}

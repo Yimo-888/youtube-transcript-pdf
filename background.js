@@ -102,20 +102,44 @@ async function toast(tabId, message, isError, ms) {
 // wait for the segments to render, scrape them, then close the panel.
 
 async function extractInPage() {
+  // Matches both the classic panel (target-id "…searchable-transcript") and the
+  // 2025 "modern transcript view" (target-id "PAmodern_transcript_view").
   const PANEL_SEL =
-    'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]';
+    'ytd-engagement-panel-section-list-renderer[target-id*="transcript" i]';
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   function getSegments() {
-    const nodes = document.querySelectorAll("ytd-transcript-segment-renderer");
+    // Modern transcript view (<transcript-segment-view-model>) first, then the
+    // classic <ytd-transcript-segment-renderer>, then loose class fallbacks.
+    let nodes = document.querySelectorAll(
+      "transcript-segment-view-model, ytd-transcript-segment-renderer"
+    );
+    if (!nodes.length) {
+      nodes = document.querySelectorAll(
+        '[class*="TranscriptSegmentViewModel"], [class*="transcript-segment"], [class*="segment-text"]'
+      );
+    }
     if (!nodes.length) return null;
     const segs = [];
     nodes.forEach((n) => {
-      const el = n.querySelector(".segment-text") ||
-                 n.querySelector('[class*="segment-text"]');
-      let v = ((el ? el.textContent : n.textContent) || "").trim();
-      // Without .segment-text we got the whole row — strip the leading timestamp.
-      if (!el) v = v.replace(/^\s*(?:\d+:)?\d{1,2}:\d{2}\s*/, "");
+      // Prefer the dedicated text element so we never pick up the timestamp
+      // (the modern view hides an a11y label like "0 minutes 3 seconds" in it).
+      const textEl =
+        n.querySelector(".ytAttributedStringHost") ||   // modern view text
+        n.querySelector(".segment-text") ||             // classic view text
+        n.querySelector('[class*="segment-text"]');
+      let v;
+      if (textEl) {
+        v = (textEl.textContent || "").trim();
+      } else {
+        // Fallback: take the whole row but drop any timestamp child first.
+        const clone = n.cloneNode(true);
+        clone.querySelectorAll(
+          '[class*="Timestamp"], [class*="timestamp"], .segment-timestamp'
+        ).forEach((t) => t.remove());
+        v = (clone.textContent || "").trim()
+          .replace(/^\s*(?:\d+:)?\d{1,2}:\d{2}\s*/, "");
+      }
       if (v) segs.push(v);
     });
     return segs.length ? segs : null;
@@ -123,8 +147,22 @@ async function extractInPage() {
 
   function transcriptButton() {
     // Structural selector first (locale-independent), aria-label as fallback.
-    return document.querySelector("ytd-video-description-transcript-section-renderer button") ||
-           document.querySelector('button[aria-label*="ranscript"]');
+    const direct =
+      document.querySelector("ytd-video-description-transcript-section-renderer button") ||
+      document.querySelector('button[aria-label*="ranscript" i]');
+    if (direct) return direct;
+    // Last resort: scan every clickable for the word "transcript" in its
+    // label or text. Survives most tag/attribute renames.
+    const clickables = document.querySelectorAll(
+      "button, a, tp-yt-paper-button, yt-button-shape, ytd-button-renderer"
+    );
+    for (const el of clickables) {
+      const label =
+        ((el.getAttribute && el.getAttribute("aria-label")) || "") +
+        " " + (el.textContent || "");
+      if (/transcript/i.test(label)) return (el.closest && el.closest("button")) || el;
+    }
+    return null;
   }
 
   async function openPanelAndScrape() {
@@ -132,7 +170,8 @@ async function extractInPage() {
     if (!btn) {
       // The transcript section may only exist once the description is expanded.
       const expander = document.querySelector(
-        "#description-inline-expander #expand, tp-yt-paper-button#expand"
+        "#description-inline-expander #expand, ytd-text-inline-expander #expand, " +
+        "tp-yt-paper-button#expand, #expand"
       );
       if (expander) { expander.click(); await sleep(350); btn = transcriptButton(); }
     }
@@ -151,10 +190,13 @@ async function extractInPage() {
         segs = getSegments();
       }
     } finally {
-      const panel = document.querySelector(PANEL_SEL);
-      const close = panel && panel.querySelector(
-        '#visibility-button button, button[aria-label*="lose"]'
-      );
+      // More than one transcript panel can exist; close whichever has a button.
+      let close = null;
+      document.querySelectorAll(PANEL_SEL).forEach((p) => {
+        close = close || p.querySelector(
+          '#visibility-button button, button[aria-label*="lose" i]'
+        );
+      });
       if (close) close.click();
       style.remove();
     }
